@@ -19,30 +19,55 @@ const colorThief = new ColorThief();
  * @returns {Promise<object[]>} A promise that resolves to an array of channel data objects.
  */
 async function fetchChannelsData(idArray) {
-  const idString = idArray.join(',');
-  // Fetch only static data (snippet) from YouTube to preserve API quota.
-  const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${idString}&key=${API_KEY}`);
-  const data = await res.json();
+  const CHUNK_SIZE = 50; // YouTube API limit for IDs per request
+  const allChannelItems = [];
+  const fetchPromises = [];
 
-  if (!data.items || data.items.length === 0) {
-    console.error(`Could not fetch channel data. Response:`, data);
-    return [];
+  // The YouTube API's 'channels' endpoint can only accept a maximum of 50 IDs at a time.
+  // To support more than 50 channels, we must break the list of IDs into chunks.
+  for (let i = 0; i < idArray.length; i += CHUNK_SIZE) {
+    const chunk = idArray.slice(i, i + CHUNK_SIZE);
+    const idString = chunk.join(',');
+    const url = `https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${idString}&key=${API_KEY}`;
+    // Add the fetch promise to an array to run them in parallel for better performance.
+    fetchPromises.push(fetch(url).then(res => res.json()));
   }
 
-  // Map the API response to our desired channel object structure.
-  return data.items.map(item => {
-    let handle = item.snippet.customUrl || item.snippet.title;
-    if (handle && !handle.startsWith('@')) {
-      handle = '@' + handle;
+  try {
+    const results = await Promise.all(fetchPromises);
+
+    for (const data of results) {
+      if (data.items && data.items.length > 0) {
+        allChannelItems.push(...data.items);
+      } else if (data.error) {
+        // Log specific API errors if they occur, which helps with debugging.
+        console.error('YouTube API Error:', data.error.message);
+      }
     }
-    return {
-      id: item.id,
-      name: item.snippet.title, // Keep original name for alt tags, etc.
-      handle: handle,
-      img: item.snippet.thumbnails.medium.url, // Use medium res for better color sampling
-      country: item.snippet.country,
-    };
-  });
+
+    if (allChannelItems.length === 0) {
+      console.error(`Could not fetch any channel data. Check API key and channel IDs.`);
+      return [];
+    }
+
+    // Map the combined API responses to our desired channel object structure.
+    return allChannelItems.map(item => {
+      let handle = item.snippet.customUrl || item.snippet.title;
+      if (handle && !handle.startsWith('@')) {
+        handle = '@' + handle;
+      }
+      return {
+        id: item.id,
+        name: item.snippet.title, // Keep original name for alt tags, etc.
+        handle: handle,
+        img: item.snippet.thumbnails.medium.url, // Use medium res for better color sampling
+        country: item.snippet.country,
+      };
+    });
+  } catch (error) {
+    console.error('Failed to fetch channel data chunks:', error);
+    return [];
+  }
 }
 
 /**
@@ -142,7 +167,7 @@ function drawSparkline(channel) {
 
   ctx.clearRect(0, 0, width, height);
   ctx.beginPath();
-  ctx.lineWidth = 1.5;
+  ctx.lineWidth = 2; // Make the line thicker
   // Use a theme-aware color for the graph line
   ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent-color').trim();
 
@@ -189,6 +214,7 @@ async function createChannels(channelIds) {
     channels.forEach((channel, index) => {
       channel.subs = initialSubCounts[index] || 0;
       channel.gain = 0;
+      channel.isSuperHot = false; // Initialize property
       channel.isOnFire = false; // Initialize property
       channel.dailyGain = 0; // Initialize property
       channel.gainHistory = new Array(30).fill(0); // History for 1 minute (30 * 2s)
@@ -238,6 +264,8 @@ async function createChannels(channelIds) {
     div.className = 'channel';
     div.id = `channel-${channel.id}`;
     const rank = (index + 1).toString().padStart(2, '0');
+    const fireGifUrl = 'https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExY254aXZ6Nm53ZXB4aTZhcjYybjE4dHp6bjFjNTJ4enAxbTBnempudiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/m7yRNcSW0Ls3E0uXVX/giphy.gif';
+    const superFireGifUrl = 'https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExZDdsc215ZjNveDFmODFtMWdyN3JuaWE5amJ3aWsyMmV5YWNqcXozMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/ZmTNJlFpe8bXzxiK3x/giphy.gif';
     const flagHtml = channel.country
       ? `<img class="channel-flag" src="https://flagcdn.com/w20/${channel.country.toLowerCase()}.png" alt="${channel.country} flag" title="${channel.country}">`
       : '';
@@ -245,8 +273,9 @@ async function createChannels(channelIds) {
 
     div.innerHTML = `
       <div class="rank-container">
+        <img class="fire-gif" src="${fireGifUrl}" style="display: none;" alt="On fire!">
+        <img class="super-fire-gif" src="${superFireGifUrl}" style="display: none;" alt="Super hot!">
         <div class="channel-rank">${rank}</div>
-        <div class="fire-icon" style="display: none;">🔥</div>
       </div>
       <div class="channel-avatar-container">
         <img class="channel-avatar" src="${channel.img}" alt="${channel.name}">
@@ -311,10 +340,21 @@ async function updateCounts() {
       if (oldSubs > 0) {
         channel.gain = newSubs - oldSubs;
       }
-      // A channel is "on fire" if gaining over 5,000 subs/hour.
-      // (gain per 2s) * 1800 (intervals in an hour) > 5000
-      // Simplified: gain per 2s > 2.77
-      channel.isOnFire = channel.gain >= 3;
+
+      // "Super Hot" is > 10,000 subs/hour (gain >= 6 per 2s)
+      // 10000 subs/hr / 1800 intervals/hr = 5.55 subs/interval
+      if (channel.gain >= 6) {
+        channel.isSuperHot = true;
+        channel.isOnFire = false;
+      // "On Fire" is > 5,000 subs/hour (gain >= 3 per 2s)
+      // 5000 subs/hr / 1800 intervals/hr = 2.77 subs/interval
+      } else if (channel.gain >= 3) {
+        channel.isSuperHot = false;
+        channel.isOnFire = true;
+      } else {
+        channel.isSuperHot = false;
+        channel.isOnFire = false;
+      }
       channel.subs = newSubs;
 
       // Recalculate daily gain and update the UI
@@ -382,6 +422,19 @@ async function updateCounts() {
 }
 
 /**
+ * Updates the "Last Updated" timestamp in the UI.
+ */
+function updateTimestamp() {
+  const timestampElement = document.getElementById('last-updated-time');
+  if (timestampElement) {
+    const now = new Date();
+    // Format to HH:MM:SS
+    timestampElement.textContent = now.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' });
+  }
+}
+
+
+/**
  * Re-orders DOM elements based on the `channels` array, updates ranks, and applies animations.
  * @param {string[]} oldOrderIds An array of channel IDs in their previous order.
  */
@@ -395,9 +448,14 @@ function updateDomOrderAndVisuals(oldOrderIds) {
     element.querySelector('.channel-rank').textContent = (newIndex + 1).toString().padStart(2, '0');
 
     // Update fire icon visibility
-    const fireIcon = element.querySelector('.fire-icon');
-    if (fireIcon) {
-      fireIcon.style.display = channel.isOnFire ? 'block' : 'none';
+    const fireGif = element.querySelector('.fire-gif');
+    if (fireGif) {
+      fireGif.style.display = channel.isOnFire ? 'block' : 'none';
+    }
+    // Update super fire icon visibility
+    const superFireGif = element.querySelector('.super-fire-gif');
+    if (superFireGif) {
+      superFireGif.style.display = channel.isSuperHot ? 'block' : 'none';
     }
 
     // Animate if the channel moved up in the ranking
@@ -563,18 +621,58 @@ function initializeSettingsPanel() {
 function applyCustomStyles() {
   const style = document.createElement('style');
   style.textContent = `
+    #channelList {
+      max-width: 700px; /* Adjusted width to be more compact and remove extra space */
+    }
     :root {
-      --gain-color: #4caf50;
+      --gain-color-rgb: 76, 175, 80; /* RGB for #4caf50 */
+      --gain-color: rgb(var(--gain-color-rgb));
       --loss-color: #f44336;
     }
     body.light-mode {
-      --gain-color: #2e7d32;
+      --gain-color-rgb: 46, 125, 50; /* RGB for #2e7d32 */
+      --gain-color: rgb(var(--gain-color-rgb));
       --loss-color: #c62828;
     }
     .channel {
       /* Increase vertical padding to make the boxes taller */
-      padding-top: 12px;
-      padding-bottom: 12px;
+      padding-top: 16px;
+      padding-bottom: 16px;
+    }
+    .rank-container {
+      position: relative;
+      width: 30px; /* Made even narrower */
+      height: 60px; /* Match new avatar size */
+      display: flex;
+      justify-content: center;
+      align-items: center;
+      flex-shrink: 0; /* Prevent container from shrinking */
+    }
+    .fire-gif {
+      position: absolute;
+      top: -5px;
+      left: -5px;
+      width: 40px; /* Adjusted for new aspect ratio */
+      height: 60px; /* Adjusted for new aspect ratio */
+      z-index: 1;
+    }
+    .super-fire-gif {
+      position: absolute;
+      top: -5px; /* Match regular fire position */
+      left: -5px; /* Match regular fire position */
+      width: 40px;  /* Match regular fire size */
+      height: 60px; /* Match regular fire size */
+      z-index: 1; /* Same z-index as regular fire */
+      opacity: 0.9; /* Slightly transparent to not be overwhelming */
+      pointer-events: none; /* Prevent GIF from blocking mouse events */
+    }
+    .channel-rank {
+      position: relative;
+      z-index: 2; /* Ensure rank is on top of the GIF */
+      font-size: 1.1rem;
+      font-weight: 700;
+      color: #fff;
+      text-shadow: 0 0 5px rgba(0,0,0,0.8); /* Add shadow for readability */
     }
     .channel-name {
       font-size: 1.2rem; /* Increased from 1.1rem */
@@ -607,6 +705,28 @@ function applyCustomStyles() {
     .gain-negative {
       color: var(--loss-color);
     }
+    .channel-avatar-container {
+      position: relative; /* For positioning the flag */
+      width: 60px;
+      height: 60px;
+      flex-shrink: 0; /* Prevent avatar from shrinking */
+    }
+    .channel-avatar {
+      width: 100%;
+      height: 100%;
+      border-radius: 50%; /* Make it a circle */
+      object-fit: cover; /* Ensure image covers the area without distortion */
+    }
+    .channel-flag {
+      position: absolute;
+      bottom: 0;
+      right: 0;
+      width: 20px; /* Explicit width */
+      height: 20px; /* Explicit height to make it a square */
+      object-fit: cover; /* Ensures the flag fills the square, cropping if needed */
+      border-radius: 3px; /* From a circle to a square with rounded corners */
+      border: 2px solid var(--bg-color); /* Creates separation from avatar */
+    }
     .channel-details {
       flex-grow: 1;
       display: flex;
@@ -626,14 +746,22 @@ function applyCustomStyles() {
       width: 100%;
       height: 100%;
       z-index: 1;
-      opacity: 0.5; /* Make graph less distracting */
+      opacity: 0.7; /* Make graph more prominent */
       border: 1px solid var(--border-color);
       border-radius: 4px;
-      background-color: rgba(0, 0, 0, 0.05);
+      background-color: rgba(0, 0, 0, 0.1); /* Slightly darker background */
     }
     /* Settings Panel Styles */
     .header-controls {
       position: relative; /* Needed for panel positioning */
+      display: flex;
+      align-items: center;
+      gap: 12px;
+    }
+    .last-updated-container {
+      font-size: 0.8rem;
+      opacity: 0.8;
+      white-space: nowrap;
     }
     .settings-panel {
       position: absolute;
@@ -660,6 +788,28 @@ function applyCustomStyles() {
       gap: 8px;
       margin-bottom: 4px;
     }
+
+    /* New animation for when a channel moves up in rank */
+    @keyframes rankUpAnimation {
+      0% {
+        transform: translateY(0);
+        background-color: transparent;
+      }
+      40% {
+        transform: translateY(-5px);
+        /* Use a translucent version of the theme-aware gain color */
+        background-color: rgba(var(--gain-color-rgb), 0.15);
+      }
+      100% {
+        transform: translateY(0);
+        background-color: transparent;
+      }
+    }
+    .rank-up-animation {
+      animation: rankUpAnimation 0.8s ease-in-out;
+      position: relative; /* Needed for z-index to work */
+      z-index: 10; /* Ensure it animates over other elements */
+    }
   `;
   document.head.appendChild(style);
 }
@@ -679,6 +829,16 @@ function initializeUI() {
   if (milestoneSection) {
     milestoneSection.style.display = 'none';
   }
+
+  const headerControls = document.querySelector('.header-controls');
+  if (headerControls) {
+    const timestampContainer = document.createElement('div');
+    timestampContainer.className = 'last-updated-container';
+    timestampContainer.innerHTML = `Last Updated: <span id="last-updated-time">loading...</span>`;
+    // Add it to the controls container, it will be positioned by CSS
+    headerControls.prepend(timestampContainer);
+  }
+
   initializeSearchBar();
   initializeThemeToggle();
   initializeSettingsPanel();
@@ -705,6 +865,7 @@ function startApp() {
         currentChannelIds = newChannelIds;
         totalCountOdometer?.update(currentChannelIds.length);
         createChannels(currentChannelIds);
+        updateTimestamp(); // Also update timestamp on full reload
       }
     } catch (error) {
       console.error('Error fetching or parsing channels.json:', error);
