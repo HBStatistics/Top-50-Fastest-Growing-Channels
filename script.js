@@ -1,31 +1,22 @@
 const API_KEY = 'AIzaSyBgELAGkvluwfu6CNKHNDTwq20_8lckcZU'; // IMPORTANT: Replace with a valid YouTube Data API key from Google Cloud Console.
 
-const channelIds = [
-  'UCX6OQ3DkcsbYNE6H8uQQuVA', // MrBeast
-  'UCZs0WwC0Dn_noiQE2BHSTKg', // Alejo Igoa
-  'UCPuEAY09CtdTzFNWuqVZgDw', // Topper Guild
-  'UCHdH2ijb9dtQRRH08u1jd7A', // Masters Of Prophecy
-  'UCoJ5osZ535ar2kzHwQMnLsA', // Double Date
-  'UCppHT7SZKKvar4Oc9J4oljQ', // Zee TV
-  'UC2tsySbe9TNrI-xh2lximHA', // A4
-  'UCCtALHup92q5xIFb7n9UXVg', // Toyota Gazoo Racing
-  'UCvlE5gTbOvjiolFlEm-c_Ow', // Vlad and Niki
-  'UCbp9MyKCTEww4CxEzc_Tp0Q', // Stokes Twins
-  'UCq-Fj5jknLsUf-MWSy4_brA', // T-Series
-  'UCiVs2pnGW5mLIc1jS2nxhjg', // 김프로KIMPRO
-  'UCe6n0z9UbsxYCS8P83f84tw', // Sierra & Rhia FAM
-];
-
 const container = document.getElementById('channelList');
 const odometerInstances = new Map();
+const LOCAL_STORAGE_KEY = 'channelDashboardState';
+let currentChannelIds = [];
+let subCountUpdateInterval = null;
+let totalCountOdometer = null;
+let milestoneOdometer = null;
+const colorThief = new ColorThief();
 
 /**
- * Fetches basic channel info (name, image) from the YouTube API.
+ * Fetches both snippet (name, image) and statistics (subscriber count) for a list of channel IDs.
  * @param {string[]} idArray An array of YouTube channel IDs.
  * @returns {Promise<object[]>} A promise that resolves to an array of channel data objects.
  */
 async function fetchChannelsData(idArray) {
   const idString = idArray.join(',');
+  // Fetch only static data (snippet) from YouTube to preserve API quota.
   const res = await fetch(`https://www.googleapis.com/youtube/v3/channels?part=snippet&id=${idString}&key=${API_KEY}`);
   const data = await res.json();
 
@@ -34,13 +25,20 @@ async function fetchChannelsData(idArray) {
     return [];
   }
 
-  // Map the API response to our desired channel object structure, without sub counts.
-  return data.items.map(item => ({
-    id: item.id,
-    name: item.snippet.title,
-    img: item.snippet.thumbnails.default.url,
-    country: item.snippet.country,
-  }));
+  // Map the API response to our desired channel object structure.
+  return data.items.map(item => {
+    let handle = item.snippet.customUrl || item.snippet.title;
+    if (handle && !handle.startsWith('@')) {
+      handle = '@' + handle;
+    }
+    return {
+      id: item.id,
+      name: item.snippet.title, // Keep original name for alt tags, etc.
+      handle: handle,
+      img: item.snippet.thumbnails.medium.url, // Use medium res for better color sampling
+      country: item.snippet.country,
+    };
+  });
 }
 
 /**
@@ -50,7 +48,6 @@ async function fetchChannelsData(idArray) {
  */
 async function fetchSubCount(channelId) {
   try {
-    // Use the Mixerno API for live, unabbreviated subscriber counts.
     const res = await fetch(`https://mixerno.space/api/youtube-channel-counter/user/${channelId}`);
     if (!res.ok) {
       console.error(`Failed to fetch sub count for ${channelId}. Status: ${res.status}`);
@@ -64,32 +61,105 @@ async function fetchSubCount(channelId) {
   }
 }
 
-async function createChannels() {
+/**
+ * Extracts the dominant color from a channel's logo and applies it as a glow effect.
+ * @param {HTMLElement} element The channel card element.
+ * @param {string} imageUrl The URL of the channel's logo.
+ */
+function applyDominantColor(element, imageUrl) {
+  const img = new Image();
+  img.crossOrigin = 'Anonymous';
+  // Use a CORS proxy to prevent security errors when accessing image data
+  const proxiedUrl = `https://corsproxy.io/?${encodeURIComponent(imageUrl)}`;
+  img.src = proxiedUrl;
+
+  img.addEventListener('load', () => {
+    try {
+      const [r, g, b] = colorThief.getColor(img);
+      // Apply a subtle glow effect using the dominant color
+      element.style.boxShadow = `0 0 18px rgba(${r}, ${g}, ${b}, 0.6)`;
+    } catch (e) {
+      console.error(`Could not get color from image: ${imageUrl}`, e);
+    }
+  });
+
+  img.addEventListener('error', () => {
+    console.error(`Failed to load image for color extraction: ${proxiedUrl}`);
+  });
+}
+
+/**
+ * Calculates the last passed milestone for a given subscriber count.
+ * @param {number} subs The subscriber count.
+ * @returns {number} The milestone value.
+ */
+function getMilestoneFor(subs) {
+  if (subs < 1000000) { // Under 1M, milestones are every 100k
+    return Math.floor(subs / 100000) * 100000;
+  }
+  if (subs < 10000000) { // Under 10M, milestones are every 1M
+    return Math.floor(subs / 1000000) * 1000000;
+  }
+  // Over 10M, milestones are every 10M
+  return Math.floor(subs / 10000000) * 10000000;
+}
+
+/**
+ * Updates the milestone display in the header.
+ * @param {object} channel The channel that hit the milestone.
+ * @param {number} milestoneValue The value of the milestone.
+ */
+function updateMilestoneDisplay(channel, milestoneValue) {
+  const section = document.getElementById('milestone-section');
+  const avatar = document.getElementById('milestone-avatar');
+  const handle = document.getElementById('milestone-handle');
+
+  if (section && avatar && handle && milestoneOdometer) {
+    avatar.src = channel.img;
+    handle.textContent = channel.handle;
+    milestoneOdometer.update(milestoneValue);
+    section.style.visibility = 'visible';
+  }
+}
+
+async function createChannels(channelIds) {
   // Display a loader while fetching initial data
   container.innerHTML = '<div class="loader"></div>';
 
-  // 1. Fetch static channel data (name, image) from YouTube API
-  const channels = await fetchChannelsData(channelIds);
+  let channels;
+  const savedStateJSON = localStorage.getItem(LOCAL_STORAGE_KEY);
 
-  // Handle cases where the API call failed completely
-  if (channels.length === 0) {
-      container.innerHTML = '<p style="text-align: center;">Failed to load channel data. Please check your API key and the console for errors.</p>';
-      return;
+  // Try to load state from localStorage if it exists and matches the current channel list
+  if (savedStateJSON) {
+    const savedState = JSON.parse(savedStateJSON);
+    if (JSON.stringify(savedState.ids) === JSON.stringify(channelIds)) {
+      console.log("Loading channel data from saved state.");
+      channels = savedState.channels;
+    }
   }
 
-  // 2. Fetch initial subscriber counts from Mixerno API
-  const initialSubCounts = await Promise.all(
-    channels.map(channel => fetchSubCount(channel.id))
-  );
+  // If no valid saved state, fetch fresh data from the API
+  if (!channels) {
+    console.log("No valid saved state. Fetching fresh data from API.");
+    // 1. Fetch static data (name, image, etc.)
+    channels = await fetchChannelsData(channelIds);
+    if (channels.length === 0) {
+        container.innerHTML = '<p style="text-align: center;">Failed to load channel data. Please check your API key and the console for errors.</p>';
+        return;
+    }
+    // 2. Fetch initial subscriber counts from Mixerno
+    const initialSubCounts = await Promise.all(
+      channels.map(channel => fetchSubCount(channel.id))
+    );
+    // 3. Combine the data
+    channels.forEach((channel, index) => {
+      channel.subs = initialSubCounts[index] || 0;
+      channel.gain = 0;
+    });
+  }
 
-  // 3. Combine the data into the final channel objects
-  channels.forEach((channel, index) => {
-    channel.subs = initialSubCounts[index] || 0;
-    channel.gain = 0;
-  });
-
-  // Sort channels initially by subscriber count
-  channels.sort((a, b) => b.subs - a.subs);
+  // Sort channels by growth rate to maintain consistent ranking on refresh
+  channels.sort((a, b) => b.gain - a.gain);
 
   // Clear the loader
   container.innerHTML = '';
@@ -110,11 +180,13 @@ async function createChannels() {
         ${flagHtml}
       </div>
       <div class="channel-details">
-        <div class="channel-name">${channel.name}</div>
+        <div class="channel-name">${channel.handle}</div>
         <div id="subs-${channel.id}" class="odometer odometer-theme-default"></div>
       </div>
     `;
     container.appendChild(div);
+
+    applyDominantColor(div, channel.img);
 
     // Manually initialize Odometer on the newly created element.
     // Store the instance so we can call its .update() method later.
@@ -127,15 +199,19 @@ async function createChannels() {
   });
 
   // The odometers are already initialized with the correct counts.
-  // The setInterval will handle all subsequent updates.
-  setInterval(() => updateCounts(channels), 2000); // Update every 2 seconds
+  // Clear any existing interval before setting a new one.
+  if (subCountUpdateInterval) {
+    clearInterval(subCountUpdateInterval);
+  }
+  // Use a faster interval now that we are using the Mixerno API for frequent updates.
+  subCountUpdateInterval = setInterval(() => updateCounts(channels), 2000); // Update every 2 seconds
 }
 
 async function updateCounts(channels) {
   // Store the current order of channel IDs before re-sorting
   const oldOrderIds = channels.map(c => c.id);
 
-  // 1. Fetch fresh subscriber counts in parallel
+  // 1. Fetch fresh subscriber counts from Mixerno in parallel
   const allNewSubs = await Promise.all(
     channels.map(channel => fetchSubCount(channel.id))
   );
@@ -143,18 +219,32 @@ async function updateCounts(channels) {
   // 2. Update channel data and DOM with new counts
   channels.forEach((channel, index) => {
     const newSubs = allNewSubs[index];
-    if (channel.subs > 0) {
-      channel.gain = newSubs - channel.subs;
-    }
-    channel.subs = newSubs;
-    const odInstance = odometerInstances.get(channel.id);
-    if (odInstance) {
-      odInstance.update(newSubs);
+    if (newSubs > 0) { // Only update if the fetch was successful
+      const oldSubs = channel.subs;
+
+      // Check for milestone
+      if (oldSubs > 0) {
+        const oldMilestone = getMilestoneFor(oldSubs);
+        const newMilestone = getMilestoneFor(newSubs);
+        if (newMilestone > oldMilestone) {
+          updateMilestoneDisplay(channel, newMilestone);
+        }
+      }
+
+      if (oldSubs > 0) {
+        channel.gain = newSubs - oldSubs;
+      }
+      channel.subs = newSubs;
+
+      const odInstance = odometerInstances.get(channel.id);
+      if (odInstance) {
+        odInstance.update(newSubs);
+      }
     }
   });
 
-  // 3. Sort channels by the new subscriber count
-  channels.sort((a, b) => b.subs - a.subs);
+  // 3. Sort channels by the gain in the last interval to rank by growth rate
+  channels.sort((a, b) => b.gain - a.gain);
 
   // 4. Re-order DOM, update ranks, and apply animations for overtakes
   channels.forEach((channel, newIndex) => {
@@ -186,18 +276,94 @@ async function updateCounts(channels) {
     const element = document.getElementById(`channel-${channel.id}`);
     element.classList.toggle('fastest-gainer', channel === fastestGainer);
   });
+
+  // 7. Save the updated state to localStorage to persist across refreshes
+  const stateToSave = {
+    ids: channels.map(c => c.id),
+    channels: channels
+  };
+  localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(stateToSave));
 }
 
-createChannels();
+/**
+ * Initializes the search bar functionality to filter channels.
+ */
+function initializeSearchBar() {
+  const searchBar = document.getElementById('search-bar');
+  const clearBtn = document.getElementById('clear-search-btn');
+  if (!searchBar || !clearBtn) return;
+
+  searchBar.addEventListener('input', (event) => {
+    const query = event.target.value.toLowerCase().trim();
+    clearBtn.style.display = query ? 'block' : 'none'; // Show button if there's text
+    const channelElements = document.querySelectorAll('.channel');
+
+    channelElements.forEach(element => {
+      const channelNameElement = element.querySelector('.channel-name');
+      if (channelNameElement) {
+        const channelName = channelNameElement.textContent.toLowerCase();
+        // Show the element if its name includes the query, hide otherwise.
+        element.style.display = channelName.includes(query) ? 'flex' : 'none';
+      }
+    });
+  });
+
+  clearBtn.addEventListener('click', () => {
+    searchBar.value = '';
+    // Programmatically trigger the 'input' event to reset the filter
+    const inputEvent = new Event('input', { bubbles: true });
+    searchBar.dispatchEvent(inputEvent);
+    searchBar.focus(); // Keep focus on the search bar
+  });
+}
 
 /**
  * Initializes a counter to display the total number of channels being tracked.
  */
-function initializeTotalChannelCounter() {
+function initializeUI() {
   const totalCountElement = document.getElementById('total-channel-count');
   if (totalCountElement) {
-    new Odometer({ el: totalCountElement, value: channelIds.length, duration: 1000 });
+    totalCountOdometer = new Odometer({ el: totalCountElement, value: 0, duration: 1000 });
   }
+
+  const milestoneValueElement = document.getElementById('milestone-value');
+  if (milestoneValueElement) {
+    milestoneOdometer = new Odometer({ el: milestoneValueElement, value: 0, duration: 2000 });
+  }
+
+  initializeSearchBar();
 }
 
-initializeTotalChannelCounter();
+/**
+ * Main application logic. Checks for updates to the channel list and rebuilds the UI if necessary.
+ */
+function startApp() {
+  async function checkForChannelListUpdates() {
+    try {
+      const res = await fetch('channels.json');
+      if (!res.ok) {
+        container.innerHTML = '<p style="text-align: center; color: red;">Error: Could not load channels.json. Please ensure the file exists.</p>';
+        return;
+      }
+      const newChannelIds = await res.json();
+
+      // Compare the new list with the current one. If they differ, reload the dashboard.
+      if (JSON.stringify(newChannelIds) !== JSON.stringify(currentChannelIds)) {
+        console.log('Channel list has changed. Reloading dashboard...');
+        // Clear old state from localStorage since the channel list is different
+        localStorage.removeItem(LOCAL_STORAGE_KEY);
+        currentChannelIds = newChannelIds;
+        totalCountOdometer?.update(currentChannelIds.length);
+        createChannels(currentChannelIds);
+      }
+    } catch (error) {
+      console.error('Error fetching or parsing channels.json:', error);
+    }
+  }
+
+  checkForChannelListUpdates(); // Initial load
+  setInterval(checkForChannelListUpdates, 5000); // Check for updates every 5 seconds
+}
+
+initializeUI();
+startApp();

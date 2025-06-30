@@ -14,12 +14,32 @@ body {
   overflow-x: auto;
 }
 
+/* Header Layout */
+.main-header {
+  display: flex;
+  justify-content: space-between;
+  align-items: flex-start;
+  margin-bottom: 25px;
+}
+.header-col {
+  flex: 1;
+}
+.header-center {
+  display: flex;
+  justify-content: center;
+}
+.header-right {
+  display: flex;
+  justify-content: flex-end;
+  align-items: center;
+}
+
 /* Heading */
 h1 {
   text-align: left;
   font-size: 28px;
   font-weight: bold;
-  margin-bottom: 10px;
+  margin-bottom: 10px; /* Spacing between title and tracker */
 }
 
 /* Total channel tracker styling */
@@ -27,12 +47,92 @@ h1 {
   display: flex;
   align-items: center;
   gap: 8px;
-  margin-bottom: 25px;
   font-size: 18px;
   color: #ccc;
 }
 .total-tracker .odometer.odometer-theme-default {
   font-size: 20px;
+}
+
+/* Search Bar Container */
+.search-container {
+  position: relative;
+  display: flex;
+  align-items: center;
+}
+
+.search-bar {
+  background-color: #222;
+  border: 1px solid #444;
+  border-radius: 8px;
+  color: white;
+  padding: 10px 40px 10px 15px; /* Add padding on the right for the button */
+  font-size: 16px;
+  width: 300px;
+  outline: none;
+  transition: border-color 0.2s ease;
+}
+.search-bar::placeholder {
+  color: #888;
+}
+.search-bar:focus {
+  border-color: #3498db;
+}
+
+.clear-search-btn {
+  position: absolute;
+  right: 10px;
+  top: 50%;
+  transform: translateY(-50%);
+  background: none;
+  border: none;
+  color: #888;
+  font-size: 24px;
+  cursor: pointer;
+  padding: 0 5px;
+  line-height: 1;
+}
+.clear-search-btn:hover {
+  color: white;
+}
+
+/* Milestone Section */
+.milestone-section {
+  background-color: #1a1a1a;
+  border: 1px solid #333;
+  border-radius: 12px;
+  padding: 15px 20px;
+  text-align: center;
+  width: 350px;
+  transition: all 0.3s ease;
+}
+.milestone-section h2 {
+  font-size: 16px;
+  color: #aaa;
+  margin-bottom: 12px;
+  text-transform: uppercase;
+  letter-spacing: 1px;
+}
+.milestone-content {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 15px;
+}
+.milestone-content img {
+  width: 50px;
+  height: 50px;
+  border-radius: 8px;
+}
+.milestone-details {
+  text-align: left;
+}
+.milestone-details #milestone-handle {
+  font-size: 18px;
+  font-weight: bold;
+}
+.milestone-details .odometer.odometer-theme-default {
+  font-size: 24px;
 }
 
 /* Loader styles */
@@ -69,8 +169,8 @@ h1 {
   display: flex;
   align-items: center;
   gap: 15px;
-  box-shadow: 0 0 10px rgba(0, 0, 0, 0.7);
-  transition: transform 0.2s ease;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.7); /* Fallback shadow */
+  transition: transform 0.2s ease, box-shadow 0.3s ease;
 }
 
 .channel:hover {
@@ -123,8 +223,16 @@ h1 {
 }
 
 /* Odometer (subscriber count) styling */
-.odometer.odometer-theme-default {
-  font-size: 24px; /* Made font size slightly larger */
+/* Adapting the "default" theme to be visible on a dark background and larger */
+.channel .odometer.odometer-theme-default {
+  font-size: 22px;
+  line-height: 1.1em;
+}
+
+.channel .odometer.odometer-theme-default .odometer-digit {
+  background: none;
+  border: none;
+  color: white;
 }
 
 /* Visual indicator for the fastest gaining channel */

@@ -7,13 +7,36 @@
   <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/odometer.js/0.4.8/themes/odometer-theme-default.min.css" />
 </head>
 <body>
-  <h1>Top 50 Fastest Growing Channels</h1>
-  <div class="total-tracker">
-    <span>channels tracked</span>
-    <div id="total-channel-count" class="odometer odometer-theme-default"></div>
-  </div>
+  <header class="main-header">
+    <div class="header-col header-left">
+      <h1>Top 50 Fastest Growing Channels</h1>
+      <div class="total-tracker">
+        <span>channels tracked</span>
+        <div id="total-channel-count" class="odometer odometer-theme-default"></div>
+      </div>
+    </div>
+    <div class="header-col header-center">
+      <div id="milestone-section" class="milestone-section" style="visibility: hidden;">
+        <h2>Latest Milestone</h2>
+        <div class="milestone-content">
+          <img id="milestone-avatar" src="" alt="milestone channel logo">
+          <div class="milestone-details">
+            <div id="milestone-handle"></div>
+            <div id="milestone-value" class="odometer odometer-theme-default"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+    <div class="header-col header-right">
+      <div class="search-container">
+        <input type="text" id="search-bar" class="search-bar" placeholder="Search for a channel...">
+        <button id="clear-search-btn" class="clear-search-btn" style="display: none;">&times;</button>
+      </div>
+    </div>
+  </header>
   <div class="channel-list" id="channelList"></div>
 
+  <script src="https://cdnjs.cloudflare.com/ajax/libs/color-thief/2.3.2/color-thief.umd.js"></script>
   <script src="https://cdnjs.cloudflare.com/ajax/libs/odometer.js/0.4.8/odometer.min.js"></script>
   <script src="script.js"></script>
 </body>
