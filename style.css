@@ -1,0 +1,110 @@
+/* Reset and base styling */
+* {
+  margin: 0;
+  padding: 0;
+  box-sizing: border-box;
+}
+
+body {
+  background-color: black;
+  color: white;
+  font-family: Arial, sans-serif;
+  min-height: 100vh;
+  padding: 20px;
+  overflow-x: hidden;
+}
+
+/* Heading */
+h1 {
+  text-align: center;
+  font-size: 28px;
+  font-weight: bold;
+  margin-bottom: 30px;
+}
+
+/* Loader styles */
+.loader {
+  border: 8px solid #f3f3f3; /* Light grey */
+  border-top: 8px solid #3498db; /* Blue */
+  border-radius: 50%;
+  width: 60px;
+  height: 60px;
+  animation: spin 1.5s linear infinite;
+  margin: 50px auto; /* Center the spinner */
+}
+
+@keyframes spin {
+  0% { transform: rotate(0deg); }
+  100% { transform: rotate(360deg); }
+}
+
+/* Channel list layout */
+.channel-list {
+  display: flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 20px;
+}
+
+/* Individual channel card */
+.channel {
+  background-color: #111;
+  border-radius: 12px;
+  padding: 15px;
+  width: 320px;
+  display: flex;
+  align-items: center;
+  gap: 15px;
+  box-shadow: 0 0 10px rgba(0, 0, 0, 0.7);
+  transition: transform 0.2s ease;
+}
+
+.channel:hover {
+  transform: scale(1.02);
+}
+
+/* Channel avatar */
+.channel img {
+  width: 60px;
+  height: 60px;
+  border-radius: 50%;
+  object-fit: cover;
+}
+
+/* Text content */
+.channel-details {
+  text-align: left;
+  flex: 1;
+}
+
+.channel-name {
+  font-size: 16px;
+  font-weight: bold;
+  margin-bottom: 6px;
+}
+
+/* Odometer (subscriber count) styling */
+.odometer {
+  font-size: 20px;
+  font-weight: bold;
+  color: #00ff00;
+  font-family: monospace;
+}
+
+/* Visual indicator for the fastest gaining channel */
+.fastest-gainer {
+  border: 1px solid rgba(0, 255, 0, 0.8);
+  animation: pulse-green 2s infinite;
+}
+
+@keyframes pulse-green {
+  0% {
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.6);
+  }
+  50% {
+    box-shadow: 0 0 25px rgba(0, 255, 0, 0.9);
+  }
+  100% {
+    box-shadow: 0 0 15px rgba(0, 255, 0, 0.6);
+  }
+}
