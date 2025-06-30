@@ -54,6 +54,7 @@ async function fetchSubCount(channelId) {
       return 0;
     }
     const data = await res.json();
+    // This API endpoint returns the count directly in the `subCount` property.
     return data.subCount || 0;
   } catch (error) {
     console.error(`Error fetching sub count for ${channelId}:`, error);
@@ -69,15 +70,29 @@ async function fetchSubCount(channelId) {
 function applyDominantColor(element, imageUrl) {
   const img = new Image();
   img.crossOrigin = 'Anonymous';
-  // Use a CORS proxy to prevent security errors when accessing image data
-  const proxiedUrl = `https://corsproxy.io/?${encodeURIComponent(imageUrl)}`;
+  // Use a CORS proxy to prevent security errors when accessing image data.
+  // Public CORS proxies can be unreliable. Switching to a different one to resolve the error.
+  // The format for thingproxy is https://thingproxy.freeboard.io/fetch/https://...
+  const proxiedUrl = `https://thingproxy.freeboard.io/fetch/${imageUrl}`;
   img.src = proxiedUrl;
 
   img.addEventListener('load', () => {
     try {
       const [r, g, b] = colorThief.getColor(img);
-      // Apply a subtle glow effect using the dominant color
-      element.style.boxShadow = `0 0 18px rgba(${r}, ${g}, ${b}, 0.6)`;
+
+      // Darken the color by a factor to ensure white text is always readable
+      const darkenFactor = 0.6;
+      const darkR = Math.floor(r * darkenFactor);
+      const darkG = Math.floor(g * darkenFactor);
+      const darkB = Math.floor(b * darkenFactor);
+
+      // Apply the darkened color as the background
+      element.style.backgroundColor = `rgb(${darkR}, ${darkG}, ${darkB})`;
+      element.style.boxShadow = 'none'; // Remove shadow for a flat, modern look
+
+      // Always use white text on the darkened background
+      element.style.color = '#fff';
+      element.style.setProperty('--odometer-text-color', '#fff');
     } catch (e) {
       console.error(`Could not get color from image: ${imageUrl}`, e);
     }
@@ -318,6 +333,46 @@ function initializeSearchBar() {
 }
 
 /**
+ * Initializes the theme toggle button and loads the saved theme preference.
+ */
+function initializeThemeToggle() {
+  const themeToggleBtn = document.getElementById('theme-toggle-btn');
+  if (!themeToggleBtn) return;
+
+  const THEME_KEY = 'dashboardTheme';
+  const lightModeClass = 'light-mode';
+  const sunIcon = '☀️';
+  const moonIcon = '🌙';
+
+  // Function to apply the theme based on the string 'light' or 'dark'
+  const applyTheme = (theme) => {
+    if (theme === 'light') {
+      document.body.classList.add(lightModeClass);
+      themeToggleBtn.textContent = moonIcon;
+      themeToggleBtn.title = 'Switch to dark mode';
+    } else {
+      document.body.classList.remove(lightModeClass);
+      themeToggleBtn.textContent = sunIcon;
+      themeToggleBtn.title = 'Switch to light mode';
+    }
+  };
+
+  // Check for a saved theme preference in localStorage and apply it
+  const savedTheme = localStorage.getItem(THEME_KEY);
+  if (savedTheme) {
+    applyTheme(savedTheme);
+  }
+
+  // Add the click event listener to toggle the theme
+  themeToggleBtn.addEventListener('click', () => {
+    const isCurrentlyLight = document.body.classList.contains(lightModeClass);
+    const newTheme = isCurrentlyLight ? 'dark' : 'light';
+    applyTheme(newTheme);
+    localStorage.setItem(THEME_KEY, newTheme);
+  });
+}
+
+/**
  * Initializes a counter to display the total number of channels being tracked.
  */
 function initializeUI() {
@@ -332,6 +387,7 @@ function initializeUI() {
   }
 
   initializeSearchBar();
+  initializeThemeToggle();
 }
 
 /**
