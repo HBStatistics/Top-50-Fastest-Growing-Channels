@@ -7,6 +7,7 @@ let currentChannelIds = [];
 let subCountUpdateInterval = null;
 let totalCountOdometer = null;
 let milestoneOdometer = null;
+let currentTopChannelImageUrl = null;
 const colorThief = new ColorThief();
 
 /**
@@ -63,43 +64,42 @@ async function fetchSubCount(channelId) {
 }
 
 /**
- * Extracts the dominant color from a channel's logo and applies it as a glow effect.
- * @param {HTMLElement} element The channel card element.
+ * Sets the page background to a radial gradient based on the top channel's logo color.
+ * This uses the weserv.nl image service to extract the dominant color palette,
+ * which avoids client-side CORS issues entirely.
  * @param {string} imageUrl The URL of the channel's logo.
  */
-function applyDominantColor(element, imageUrl) {
+function updatePageBackground(imageUrl) {
   const img = new Image();
   img.crossOrigin = 'Anonymous';
-  // Use a CORS proxy to prevent security errors when accessing image data.
-  // Public CORS proxies can be unreliable. Switching to a different one to resolve the error.
-  // The format for thingproxy is https://thingproxy.freeboard.io/fetch/https://...
-  const proxiedUrl = `https://thingproxy.freeboard.io/fetch/${imageUrl}`;
+  // Using a CORS proxy to prevent security errors when accessing image data.
+  // The previous service (images.weserv.nl) is returning a 404 error.
+  const proxiedUrl = `https://api.codetabs.com/v1/proxy?quest=${imageUrl}`;
   img.src = proxiedUrl;
 
   img.addEventListener('load', () => {
     try {
       const [r, g, b] = colorThief.getColor(img);
 
-      // Darken the color by a factor to ensure white text is always readable
-      const darkenFactor = 0.6;
+      // Darken the color for a subtle background effect
+      const darkenFactor = 0.4;
       const darkR = Math.floor(r * darkenFactor);
       const darkG = Math.floor(g * darkenFactor);
       const darkB = Math.floor(b * darkenFactor);
 
-      // Apply the darkened color as the background
-      element.style.backgroundColor = `rgb(${darkR}, ${darkG}, ${darkB})`;
-      element.style.boxShadow = 'none'; // Remove shadow for a flat, modern look
+      // Get the base background color from the current theme's CSS variable
+      const baseBgColor = getComputedStyle(document.documentElement).getPropertyValue('--bg-color').trim();
 
-      // Always use white text on the darkened background
-      element.style.color = '#fff';
-      element.style.setProperty('--odometer-text-color', '#fff');
+      // Apply a "fancy" radial gradient as the new background
+      document.body.style.background = `radial-gradient(circle at 50% 0%, rgba(${darkR}, ${darkG}, ${darkB}, 0.5) 0%, ${baseBgColor} 80%)`;
+      document.body.style.backgroundAttachment = 'fixed'; // Keep gradient fixed on scroll
     } catch (e) {
-      console.error(`Could not get color from image: ${imageUrl}`, e);
+      console.error(`Could not get color for page background: ${imageUrl}`, e);
     }
   });
 
   img.addEventListener('error', () => {
-    console.error(`Failed to load image for color extraction: ${proxiedUrl}`);
+    console.error(`Failed to load image for background color extraction: ${proxiedUrl}`);
   });
 }
 
@@ -170,11 +170,18 @@ async function createChannels(channelIds) {
     channels.forEach((channel, index) => {
       channel.subs = initialSubCounts[index] || 0;
       channel.gain = 0;
+      channel.isOnFire = false; // Initialize property
     });
   }
 
   // Sort channels by growth rate to maintain consistent ranking on refresh
   channels.sort((a, b) => b.gain - a.gain);
+
+  // Set initial page background based on top channel
+  if (channels.length > 0) {
+    currentTopChannelImageUrl = channels[0].img;
+    updatePageBackground(currentTopChannelImageUrl);
+  }
 
   // Clear the loader
   container.innerHTML = '';
@@ -189,7 +196,10 @@ async function createChannels(channelIds) {
       : '';
 
     div.innerHTML = `
-      <div class="channel-rank">${rank}</div>
+      <div class="rank-container">
+        <div class="channel-rank">${rank}</div>
+        <div class="fire-icon" style="display: none;">🔥</div>
+      </div>
       <div class="channel-avatar-container">
         <img class="channel-avatar" src="${channel.img}" alt="${channel.name}">
         ${flagHtml}
@@ -200,8 +210,6 @@ async function createChannels(channelIds) {
       </div>
     `;
     container.appendChild(div);
-
-    applyDominantColor(div, channel.img);
 
     // Manually initialize Odometer on the newly created element.
     // Store the instance so we can call its .update() method later.
@@ -223,6 +231,9 @@ async function createChannels(channelIds) {
 }
 
 async function updateCounts(channels) {
+  // Store the ID of the top channel *before* fetching new data and re-sorting
+  const topChannelIdBeforeUpdate = channels.length > 0 ? channels[0].id : null;
+
   // Store the current order of channel IDs before re-sorting
   const oldOrderIds = channels.map(c => c.id);
 
@@ -249,6 +260,10 @@ async function updateCounts(channels) {
       if (oldSubs > 0) {
         channel.gain = newSubs - oldSubs;
       }
+      // A channel is "on fire" if gaining over 5,000 subs/hour.
+      // (gain per 2s) * 1800 (intervals in an hour) > 5000
+      // Simplified: gain per 2s > 2.77
+      channel.isOnFire = channel.gain >= 3;
       channel.subs = newSubs;
 
       const odInstance = odometerInstances.get(channel.id);
@@ -261,12 +276,27 @@ async function updateCounts(channels) {
   // 3. Sort channels by the gain in the last interval to rank by growth rate
   channels.sort((a, b) => b.gain - a.gain);
 
+  // Get the ID of the new top channel
+  const topChannelIdAfterUpdate = channels.length > 0 ? channels[0].id : null;
+
+  // Update page background ONLY if the top channel has changed
+  if (topChannelIdAfterUpdate && topChannelIdAfterUpdate !== topChannelIdBeforeUpdate) {
+    currentTopChannelImageUrl = channels[0].img;
+    updatePageBackground(currentTopChannelImageUrl);
+  }
+
   // 4. Re-order DOM, update ranks, and apply animations for overtakes
   channels.forEach((channel, newIndex) => {
     const element = document.getElementById(`channel-${channel.id}`);
     const oldIndex = oldOrderIds.findIndex(id => id === channel.id);
 
     element.querySelector('.channel-rank').textContent = (newIndex + 1).toString().padStart(2, '0');
+
+    // Update fire icon visibility
+    const fireIcon = element.querySelector('.fire-icon');
+    if (fireIcon) {
+      fireIcon.style.display = channel.isOnFire ? 'block' : 'none';
+    }
 
     if (oldIndex !== -1 && newIndex < oldIndex) {
       element.classList.add('rank-up-animation');
@@ -354,6 +384,11 @@ function initializeThemeToggle() {
       document.body.classList.remove(lightModeClass);
       themeToggleBtn.textContent = sunIcon;
       themeToggleBtn.title = 'Switch to light mode';
+    }
+    // Re-apply the background with the new theme's base color
+    if (currentTopChannelImageUrl) {
+      // Use a timeout to ensure CSS variables have been updated by the browser
+      setTimeout(() => updatePageBackground(currentTopChannelImageUrl), 50);
     }
   };
 

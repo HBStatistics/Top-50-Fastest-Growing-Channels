@@ -42,6 +42,7 @@ body {
   min-height: 100vh;
   padding: 10px 20px;
   overflow-x: auto;
+  transition: background 0.5s ease;
 }
 
 /* Header Layout */
@@ -266,11 +267,28 @@ h1 {
   margin-bottom: 6px;
 }
 
+/* Rank & Fire Icon Container */
+.rank-container {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  width: 40px; /* Fixed width to align content nicely */
+  flex-shrink: 0;
+}
+
 /* Rank number styling */
 .channel-rank {
   font-size: 20px;
   font-weight: bold;
   /* Color is now inherited from .channel for dynamic adjustment */
+}
+
+/* Fire icon for fast-growing channels */
+.fire-icon {
+  font-size: 20px;
+  margin-top: 4px;
+  animation: fire-flicker 1.5s ease-in-out infinite;
 }
 
 /* Odometer (subscriber count) styling */
@@ -283,7 +301,7 @@ h1 {
 .channel .odometer.odometer-theme-default .odometer-digit {
   background: none;
   border: none;
-  color: var(--odometer-text-color, white); /* Use CSS variable for dynamic color */
+  color: inherit; /* Inherit color from parent (.channel) */
 }
 
 /* Visual indicator for the fastest gaining channel */
@@ -301,6 +319,15 @@ h1 {
   }
   100% {
     box-shadow: 0 0 15px rgba(0, 255, 0, 0.6);
+  }
+}
+
+@keyframes fire-flicker {
+  0%, 100% {
+    opacity: 1;
+  }
+  50% {
+    opacity: 0.6;
   }
 }
 
