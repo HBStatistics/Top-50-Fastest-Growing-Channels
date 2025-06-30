@@ -3,11 +3,14 @@ const API_KEY = 'AIzaSyBgELAGkvluwfu6CNKHNDTwq20_8lckcZU'; // IMPORTANT: Replace
 const container = document.getElementById('channelList');
 const odometerInstances = new Map();
 const LOCAL_STORAGE_KEY = 'channelDashboardState';
+const SORT_MODE_KEY = 'dashboardSortMode';
+const DAILY_STATS_KEY = 'channelDashboardDailyStats';
+let channels = [];
 let currentChannelIds = [];
 let subCountUpdateInterval = null;
 let totalCountOdometer = null;
-let milestoneOdometer = null;
 let currentTopChannelImageUrl = null;
+let currentSortMode = 'daily'; // 'daily' or 'live'
 const colorThief = new ColorThief();
 
 /**
@@ -55,8 +58,12 @@ async function fetchSubCount(channelId) {
       return 0;
     }
     const data = await res.json();
-    // This API endpoint returns the count directly in the `subCount` property.
-    return data.subCount || 0;
+    // This API endpoint returns the count inside a `counts` array.
+    if (data.counts && data.counts.length > 0) {
+        return data.counts[0].count || 0;
+    }
+    console.warn(`Could not find sub count for ${channelId} in API response:`, data);
+    return 0;
   } catch (error) {
     console.error(`Error fetching sub count for ${channelId}:`, error);
     return 0;
@@ -104,44 +111,56 @@ function updatePageBackground(imageUrl) {
 }
 
 /**
- * Calculates the last passed milestone for a given subscriber count.
- * @param {number} subs The subscriber count.
- * @returns {number} The milestone value.
+ * Formats the daily gain number into a styled string.
+ * @param {number} gain The daily subscriber gain.
+ * @returns {string} The formatted HTML string.
  */
-function getMilestoneFor(subs) {
-  if (subs < 1000000) { // Under 1M, milestones are every 100k
-    return Math.floor(subs / 100000) * 100000;
-  }
-  if (subs < 10000000) { // Under 10M, milestones are every 1M
-    return Math.floor(subs / 1000000) * 1000000;
-  }
-  // Over 10M, milestones are every 10M
-  return Math.floor(subs / 10000000) * 10000000;
+function formatDailyGain(gain) {
+  // Don't show if there's no historical data or no change
+  if (gain === 0 || gain === undefined || gain === null) return '';
+  const sign = gain > 0 ? '+' : '';
+  const number = gain.toLocaleString(); // Adds commas
+  const colorClass = gain > 0 ? 'gain-positive' : 'gain-negative';
+  return `<span class="daily-gain ${colorClass}" title="Subscribers gained in the last ~24 hours">(${sign}${number})</span>`;
 }
 
 /**
- * Updates the milestone display in the header.
- * @param {object} channel The channel that hit the milestone.
- * @param {number} milestoneValue The value of the milestone.
+ * Draws a mini-graph of recent subscriber gains for a channel.
+ * @param {object} channel The channel object, containing gainHistory.
  */
-function updateMilestoneDisplay(channel, milestoneValue) {
-  const section = document.getElementById('milestone-section');
-  const avatar = document.getElementById('milestone-avatar');
-  const handle = document.getElementById('milestone-handle');
+function drawSparkline(channel) {
+  const canvas = document.getElementById(`graph-${channel.id}`);
+  if (!canvas) return;
 
-  if (section && avatar && handle && milestoneOdometer) {
-    avatar.src = channel.img;
-    handle.textContent = channel.handle;
-    milestoneOdometer.update(milestoneValue);
-    section.style.visibility = 'visible';
-  }
+  const ctx = canvas.getContext('2d');
+  const history = channel.gainHistory;
+  const width = canvas.width;
+  const height = canvas.height;
+  const stepX = width / (history.length - 1);
+  // Use at least 1 to avoid division by zero and give a baseline
+  const maxGain = Math.max(...history, 1);
+
+  ctx.clearRect(0, 0, width, height);
+  ctx.beginPath();
+  ctx.lineWidth = 1.5;
+  // Use a theme-aware color for the graph line
+  ctx.strokeStyle = getComputedStyle(document.documentElement).getPropertyValue('--accent-color').trim();
+
+  history.forEach((gain, index) => {
+    const x = index * stepX;
+    // Invert Y-axis because canvas (0,0) is top-left. Add a small bottom padding.
+    const y = height - (gain / maxGain) * (height - 2) - 1;
+    if (index === 0) ctx.moveTo(x, y);
+    else ctx.lineTo(x, y);
+  });
+
+  ctx.stroke();
 }
 
 async function createChannels(channelIds) {
   // Display a loader while fetching initial data
   container.innerHTML = '<div class="loader"></div>';
 
-  let channels;
   const savedStateJSON = localStorage.getItem(LOCAL_STORAGE_KEY);
 
   // Try to load state from localStorage if it exists and matches the current channel list
@@ -154,7 +173,7 @@ async function createChannels(channelIds) {
   }
 
   // If no valid saved state, fetch fresh data from the API
-  if (!channels) {
+  if (channels.length === 0) {
     console.log("No valid saved state. Fetching fresh data from API.");
     // 1. Fetch static data (name, image, etc.)
     channels = await fetchChannelsData(channelIds);
@@ -171,11 +190,39 @@ async function createChannels(channelIds) {
       channel.subs = initialSubCounts[index] || 0;
       channel.gain = 0;
       channel.isOnFire = false; // Initialize property
+      channel.dailyGain = 0; // Initialize property
+      channel.gainHistory = new Array(30).fill(0); // History for 1 minute (30 * 2s)
     });
   }
 
+  // --- Daily Gain Calculation ---
+  // 1. Load historical data for daily gain calculation
+  const dailyHistory = JSON.parse(localStorage.getItem(DAILY_STATS_KEY));
+  const twentyFourHours = 24 * 60 * 60 * 1000;
+
+  // 2. Calculate daily gain for each channel
+  channels.forEach(channel => {
+    if (dailyHistory && dailyHistory.counts && dailyHistory.counts[channel.id]) {
+      channel.dailyGain = channel.subs - dailyHistory.counts[channel.id];
+    }
+  });
+
+  // 3. Check if it's time to save a new snapshot for the next day's calculation
+  if (!dailyHistory || (Date.now() - dailyHistory.timestamp > twentyFourHours)) {
+    console.log("Saving new daily stats snapshot for the next 24-hour period.");
+    const newDailyHistory = {
+      timestamp: Date.now(),
+      counts: channels.reduce((acc, { id, subs }) => ({ ...acc, [id]: subs }), {})
+    };
+    localStorage.setItem(DAILY_STATS_KEY, JSON.stringify(newDailyHistory));
+  }
+
   // Sort channels by growth rate to maintain consistent ranking on refresh
-  channels.sort((a, b) => b.gain - a.gain);
+  if (currentSortMode === 'daily') {
+    channels.sort((a, b) => b.dailyGain - a.dailyGain);
+  } else {
+    channels.sort((a, b) => b.gain - a.gain);
+  }
 
   // Set initial page background based on top channel
   if (channels.length > 0) {
@@ -194,6 +241,7 @@ async function createChannels(channelIds) {
     const flagHtml = channel.country
       ? `<img class="channel-flag" src="https://flagcdn.com/w20/${channel.country.toLowerCase()}.png" alt="${channel.country} flag" title="${channel.country}">`
       : '';
+    const dailyGainHtml = formatDailyGain(channel.dailyGain);
 
     div.innerHTML = `
       <div class="rank-container">
@@ -205,8 +253,14 @@ async function createChannels(channelIds) {
         ${flagHtml}
       </div>
       <div class="channel-details">
-        <div class="channel-name">${channel.handle}</div>
-        <div id="subs-${channel.id}" class="odometer odometer-theme-default"></div>
+        <div class="channel-name-container">
+          <div class="channel-name">${channel.handle}</div>
+          <div id="daily-gain-container-${channel.id}" class="daily-gain-container">${dailyGainHtml}</div>
+        </div>
+        <div class="sub-counter-container">
+          <div id="subs-${channel.id}" class="odometer odometer-theme-default"></div>
+          <canvas id="graph-${channel.id}" class="sparkline-graph" width="120" height="25" title="Subscriber gain over last minute"></canvas>
+        </div>
       </div>
     `;
     container.appendChild(div);
@@ -219,6 +273,9 @@ async function createChannels(channelIds) {
       duration: 2000, // Set animation speed to 2 seconds
     });
     odometerInstances.set(channel.id, odInstance);
+
+    // Draw the initial empty graph
+    drawSparkline(channel);
   });
 
   // The odometers are already initialized with the correct counts.
@@ -227,15 +284,18 @@ async function createChannels(channelIds) {
     clearInterval(subCountUpdateInterval);
   }
   // Use a faster interval now that we are using the Mixerno API for frequent updates.
-  subCountUpdateInterval = setInterval(() => updateCounts(channels), 2000); // Update every 2 seconds
+  subCountUpdateInterval = setInterval(updateCounts, 2000); // Update every 2 seconds
 }
 
-async function updateCounts(channels) {
+async function updateCounts() {
   // Store the ID of the top channel *before* fetching new data and re-sorting
   const topChannelIdBeforeUpdate = channels.length > 0 ? channels[0].id : null;
 
   // Store the current order of channel IDs before re-sorting
   const oldOrderIds = channels.map(c => c.id);
+
+  // Load daily history to recalculate daily gains as counts update
+  const dailyHistory = JSON.parse(localStorage.getItem(DAILY_STATS_KEY));
 
   // 1. Fetch fresh subscriber counts from Mixerno in parallel
   const allNewSubs = await Promise.all(
@@ -248,15 +308,6 @@ async function updateCounts(channels) {
     if (newSubs > 0) { // Only update if the fetch was successful
       const oldSubs = channel.subs;
 
-      // Check for milestone
-      if (oldSubs > 0) {
-        const oldMilestone = getMilestoneFor(oldSubs);
-        const newMilestone = getMilestoneFor(newSubs);
-        if (newMilestone > oldMilestone) {
-          updateMilestoneDisplay(channel, newMilestone);
-        }
-      }
-
       if (oldSubs > 0) {
         channel.gain = newSubs - oldSubs;
       }
@@ -266,6 +317,22 @@ async function updateCounts(channels) {
       channel.isOnFire = channel.gain >= 3;
       channel.subs = newSubs;
 
+      // Recalculate daily gain and update the UI
+      if (dailyHistory && dailyHistory.counts && dailyHistory.counts[channel.id]) {
+        channel.dailyGain = channel.subs - dailyHistory.counts[channel.id];
+        const dailyGainContainer = document.getElementById(`daily-gain-container-${channel.id}`);
+        if (dailyGainContainer) {
+          // formatDailyGain returns the full HTML span or an empty string
+          dailyGainContainer.innerHTML = formatDailyGain(channel.dailyGain);
+        }
+      }
+
+      // Update gain history for the sparkline graph.
+      // Don't graph negative gains as they are usually data corrections.
+      channel.gainHistory.shift();
+      channel.gainHistory.push(channel.gain < 0 ? 0 : channel.gain);
+      drawSparkline(channel);
+
       const odInstance = odometerInstances.get(channel.id);
       if (odInstance) {
         odInstance.update(newSubs);
@@ -273,9 +340,13 @@ async function updateCounts(channels) {
     }
   });
 
-  // 3. Sort channels by the gain in the last interval to rank by growth rate
-  channels.sort((a, b) => b.gain - a.gain);
-
+  // 3. Sort channels by the calculated daily gain
+  if (currentSortMode === 'daily') {
+    channels.sort((a, b) => b.dailyGain - a.dailyGain);
+  } else {
+    channels.sort((a, b) => b.gain - a.gain);
+  }
+  
   // Get the ID of the new top channel
   const topChannelIdAfterUpdate = channels.length > 0 ? channels[0].id : null;
 
@@ -285,27 +356,7 @@ async function updateCounts(channels) {
     updatePageBackground(currentTopChannelImageUrl);
   }
 
-  // 4. Re-order DOM, update ranks, and apply animations for overtakes
-  channels.forEach((channel, newIndex) => {
-    const element = document.getElementById(`channel-${channel.id}`);
-    const oldIndex = oldOrderIds.findIndex(id => id === channel.id);
-
-    element.querySelector('.channel-rank').textContent = (newIndex + 1).toString().padStart(2, '0');
-
-    // Update fire icon visibility
-    const fireIcon = element.querySelector('.fire-icon');
-    if (fireIcon) {
-      fireIcon.style.display = channel.isOnFire ? 'block' : 'none';
-    }
-
-    if (oldIndex !== -1 && newIndex < oldIndex) {
-      element.classList.add('rank-up-animation');
-      element.addEventListener('animationend', () => element.classList.remove('rank-up-animation'), { once: true });
-    }
-
-    container.appendChild(element); // This re-orders the element in the DOM
-  });
-
+  updateDomOrderAndVisuals(oldOrderIds);
   // 5. Find and highlight the fastest gainer (most subs in last interval)
   let fastestGainer = null;
   let maxGain = 0;
@@ -328,6 +379,35 @@ async function updateCounts(channels) {
     channels: channels
   };
   localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(stateToSave));
+}
+
+/**
+ * Re-orders DOM elements based on the `channels` array, updates ranks, and applies animations.
+ * @param {string[]} oldOrderIds An array of channel IDs in their previous order.
+ */
+function updateDomOrderAndVisuals(oldOrderIds) {
+  channels.forEach((channel, newIndex) => {
+    const element = document.getElementById(`channel-${channel.id}`);
+    if (!element) return;
+
+    const oldIndex = oldOrderIds.findIndex(id => id === channel.id);
+
+    element.querySelector('.channel-rank').textContent = (newIndex + 1).toString().padStart(2, '0');
+
+    // Update fire icon visibility
+    const fireIcon = element.querySelector('.fire-icon');
+    if (fireIcon) {
+      fireIcon.style.display = channel.isOnFire ? 'block' : 'none';
+    }
+
+    // Animate if the channel moved up in the ranking
+    if (oldIndex !== -1 && newIndex < oldIndex) {
+      element.classList.add('rank-up-animation');
+      element.addEventListener('animationend', () => element.classList.remove('rank-up-animation'), { once: true });
+    }
+
+    container.appendChild(element); // This re-orders the element in the DOM
+  });
 }
 
 /**
@@ -408,6 +488,184 @@ function initializeThemeToggle() {
 }
 
 /**
+ * Initializes the settings panel for choosing the sort method.
+ */
+function initializeSettingsPanel() {
+  const controlsContainer = document.querySelector('.header-controls');
+  if (!controlsContainer) return;
+
+  // 1. Inject the HTML for the button and panel
+  const settingsBtn = document.createElement('button');
+  settingsBtn.id = 'settings-btn';
+  settingsBtn.className = 'header-btn';
+  settingsBtn.title = 'Settings';
+  settingsBtn.innerHTML = '⚙️';
+  controlsContainer.appendChild(settingsBtn);
+
+  const panel = document.createElement('div');
+  panel.id = 'settings-panel';
+  panel.className = 'settings-panel';
+  panel.style.display = 'none'; // Initially hidden
+  panel.innerHTML = `
+    <h4>Sort By</h4>
+    <div class="setting-option">
+      <input type="radio" id="sort-daily" name="sort-mode" value="daily">
+      <label for="sort-daily">Daily Gain</label>
+    </div>
+    <div class="setting-option">
+      <input type="radio" id="sort-live" name="sort-mode" value="live">
+      <label for="sort-live">Live Gain (2s)</label>
+    </div>
+  `;
+  controlsContainer.appendChild(panel);
+
+  // 2. Load saved preference
+  const savedSortMode = localStorage.getItem(SORT_MODE_KEY);
+  if (savedSortMode) {
+    currentSortMode = savedSortMode;
+  }
+  panel.querySelector(`input[value="${currentSortMode}"]`).checked = true;
+
+  // 3. Add event listeners
+  settingsBtn.addEventListener('click', (e) => {
+    e.stopPropagation(); // Prevent the document click listener from firing immediately
+    panel.style.display = panel.style.display === 'none' ? 'block' : 'none';
+  });
+
+  // Hide panel if clicking outside of it
+  document.addEventListener('click', (e) => {
+    if (!panel.contains(e.target) && e.target !== settingsBtn) {
+      panel.style.display = 'none';
+    }
+  });
+
+  panel.querySelectorAll('input[name="sort-mode"]').forEach(radio => {
+    radio.addEventListener('change', () => {
+      const oldOrderIds = channels.map(c => c.id);
+      currentSortMode = radio.value;
+      localStorage.setItem(SORT_MODE_KEY, currentSortMode);
+
+      // Sort the global channels array based on the new mode
+      if (currentSortMode === 'daily') {
+        channels.sort((a, b) => b.dailyGain - a.dailyGain);
+      } else { // 'live'
+        channels.sort((a, b) => b.gain - a.gain);
+      }
+      // Immediately update the DOM to reflect the new sort order
+      updateDomOrderAndVisuals(oldOrderIds);
+    });
+  });
+}
+
+/**
+ * Injects custom CSS to adjust font sizes for better readability.
+ */
+function applyCustomStyles() {
+  const style = document.createElement('style');
+  style.textContent = `
+    :root {
+      --gain-color: #4caf50;
+      --loss-color: #f44336;
+    }
+    body.light-mode {
+      --gain-color: #2e7d32;
+      --loss-color: #c62828;
+    }
+    .channel {
+      /* Increase vertical padding to make the boxes taller */
+      padding-top: 12px;
+      padding-bottom: 12px;
+    }
+    .channel-name {
+      font-size: 1.2rem; /* Increased from 1.1rem */
+      font-weight: 500;
+    }
+    .odometer {
+      font-size: 1.6rem; /* Increased from 1.4rem */
+      font-weight: 600;
+      position: relative; /* Ensure odometer is on top */
+      z-index: 2;
+    }
+    .channel-name-container {
+      display: flex;
+      align-items: baseline;
+      gap: 8px;
+    }
+    .daily-gain-container {
+      /* This container just holds the span, so it shouldn't affect layout itself */
+      line-height: 1;
+    }
+    .daily-gain {
+      font-size: 0.8rem;
+      font-weight: 500;
+      opacity: 0.9;
+      flex-shrink: 0; /* Prevents the gain from shrinking if the name is long */
+    }
+    .gain-positive {
+      color: var(--gain-color);
+    }
+    .gain-negative {
+      color: var(--loss-color);
+    }
+    .channel-details {
+      flex-grow: 1;
+      display: flex;
+      flex-direction: column;
+      justify-content: center;
+      overflow: hidden; /* Prevents long names from breaking layout */
+    }
+    .sub-counter-container {
+      position: relative; /* Positioning context for the graph */
+      display: flex;
+      align-items: center;
+    }
+    .sparkline-graph {
+      position: absolute;
+      top: 0;
+      left: 0;
+      width: 100%;
+      height: 100%;
+      z-index: 1;
+      opacity: 0.5; /* Make graph less distracting */
+      border: 1px solid var(--border-color);
+      border-radius: 4px;
+      background-color: rgba(0, 0, 0, 0.05);
+    }
+    /* Settings Panel Styles */
+    .header-controls {
+      position: relative; /* Needed for panel positioning */
+    }
+    .settings-panel {
+      position: absolute;
+      top: 100%;
+      right: 0;
+      background-color: var(--bg-color-light);
+      border: 1px solid var(--border-color);
+      border-radius: 8px;
+      padding: 12px 16px;
+      z-index: 100;
+      box-shadow: 0 4px 12px rgba(0, 0, 0, 0.2);
+      width: max-content;
+    }
+    .settings-panel h4 {
+      margin-top: 0;
+      margin-bottom: 8px;
+      font-weight: 500;
+      border-bottom: 1px solid var(--border-color);
+      padding-bottom: 6px;
+    }
+    .setting-option {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      margin-bottom: 4px;
+    }
+  `;
+  document.head.appendChild(style);
+}
+
+
+/**
  * Initializes a counter to display the total number of channels being tracked.
  */
 function initializeUI() {
@@ -416,13 +674,14 @@ function initializeUI() {
     totalCountOdometer = new Odometer({ el: totalCountElement, value: 0, duration: 1000 });
   }
 
-  const milestoneValueElement = document.getElementById('milestone-value');
-  if (milestoneValueElement) {
-    milestoneOdometer = new Odometer({ el: milestoneValueElement, value: 0, duration: 2000 });
+  // Hide the milestone section as it's been removed for performance.
+  const milestoneSection = document.getElementById('milestone-section');
+  if (milestoneSection) {
+    milestoneSection.style.display = 'none';
   }
-
   initializeSearchBar();
   initializeThemeToggle();
+  initializeSettingsPanel();
 }
 
 /**
@@ -457,4 +716,5 @@ function startApp() {
 }
 
 initializeUI();
+applyCustomStyles();
 startApp();
