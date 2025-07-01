@@ -264,7 +264,7 @@ async function createChannels(channelIds) {
     div.className = 'channel';
     div.id = `channel-${channel.id}`;
     const rank = (index + 1).toString().padStart(2, '0');
-    const fireGifUrl = 'https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExY254aXZ6Nm53ZXB4aTZhcjYybjE4dHp6bjFjNTJ4enAxbTBnempudiZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/m7yRNcSW0Ls3E0uXVX/giphy.gif';
+    const fireGifUrl = 'https://media2.giphy.com/media/v1.Y2lkPTc5MGI3NjExanp4NzA5cDJoYnNpYjduNXhrOTRla2NnMDQzbzQ5eXJ1bHZkZzE4OSZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/OOxwfQKXAh8QFzkmCy/giphy.gif';
     const superFireGifUrl = 'https://media1.giphy.com/media/v1.Y2lkPTc5MGI3NjExZDdsc215ZjNveDFmODFtMWdyN3JuaWE5amJ3aWsyMmV5YWNqcXozMCZlcD12MV9pbnRlcm5hbF9naWZfYnlfaWQmY3Q9Zw/ZmTNJlFpe8bXzxiK3x/giphy.gif';
     const flagHtml = channel.country
       ? `<img class="channel-flag" src="https://flagcdn.com/w20/${channel.country.toLowerCase()}.png" alt="${channel.country} flag" title="${channel.country}">`
